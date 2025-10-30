@@ -1,6 +1,6 @@
 from copy import deepcopy
 from typing import List, Optional, Tuple, Union
-
+import cupy as cp
 import numpy as np
 import numpy.typing as npt
 
@@ -34,8 +34,8 @@ def propagate_ballistic(
         - If `t` is zero, the function returns the initial `origin` and `velocities`.
     """
     # Validate inputs
-    if not isinstance(t, np.ndarray):
-        raise TypeError("`t` must be a NumPy array.")
+    if not isinstance(t, cp.ndarray):
+        raise TypeError("`t` must be a CuPy array.")
     if t.ndim != 1:
         raise ValueError("`t` must be a 1-dimensional array.")
     if np.any(t < 0):
@@ -85,14 +85,14 @@ def calculate_time_ballistic(
         npt.NDArray[np.float64]: Time required to travel the distance `dx`.
                                     Returns NaN for invalid or negative times.
     """
-    dx = np.asarray(dx, dtype=np.float64)
-    v = np.asarray(v, dtype=np.float64)
-    a = np.asarray(a, dtype=np.float64) if not isinstance(a, float) else a
+    dx = cp.asarray(dx, dtype=cp.float64)
+    v = cp.asarray(v, dtype=cp.float64)
+    a = cp.asarray(a, dtype=cp.float64) if not isinstance(a, float) else a
 
     # Case 1: No acceleration
-    if np.all(a == 0):
+    if cp.all(cp.asarray(a == 0)):
         t = dx / v
-        t[t < 0] = np.nan  # Replace negative times with NaN
+        t[t < 0] = cp.nan  # Replace negative times with NaN
         return t
 
     # Case 2: With acceleration
@@ -100,7 +100,7 @@ def calculate_time_ballistic(
     valid_discriminant = discriminant >= 0
 
     # Initialize time array with NaN
-    t = np.full_like(dx, np.nan, dtype=np.float64)
+    t = cp.full_like(dx, cp.nan, dtype=cp.float64)
 
     # Compute roots only for valid discriminant
     if isinstance(a, (float, int)):
@@ -160,17 +160,16 @@ def propagate_ballistic_trajectories(
     """
     # Initialize variables for collisions, indices, and accepted trajectories
     collisions = []
-    indices = np.arange(origin.x.size)
+    indices = cp.arange(origin.x.size)
     accepted_coords = deepcopy(origin)
     accepted_velocities = deepcopy(velocities)
     t_accepted = deepcopy(t_start)
-
     # Iterate through objects (e.g., apertures) to propagate trajectories
     for obj in objects:
         # Calculate the distance to the next object along the z-axis
         dz = obj.z_stop - accepted_coords.z
 
-        if not np.allclose(dz, 0):  # If there is a non-zero distance to propagate
+        if not cp.allclose(dz, 0):  # If there is a non-zero distance to propagate
             vz = accepted_velocities.vz  # Extract z-velocity
             az = acceleration.az  # Extract z-acceleration
             t = calculate_time_ballistic(
@@ -188,13 +187,14 @@ def propagate_ballistic_trajectories(
         # Check if the trajectories are accepted by the object
         try:
             acceptance = obj.get_acceptance(
-                accepted_coords, x, accepted_velocities, acceleration
+                accepted_coords, Coordinates(cp.asnumpy(x.x), cp.asnumpy(x.y), cp.asnumpy(x.z)), accepted_velocities, acceleration
             )
+            acceptance = cp.asarray(acceptance, dtype=bool)  # Ensure acceptance is a boolean array
         except AssertionError as error:
             raise AssertionError(f"{obj} -> {error.args[0]}")
 
         # Exclude trajectories with invalid times
-        acceptance &= ~np.isnan(t)
+        acceptance &= ~cp.isnan(t)
 
         # Save collision data if required
         if save_collisions:
@@ -216,7 +216,7 @@ def propagate_ballistic_trajectories(
         indices = indices[acceptance]
 
     # Determine which trajectories survive
-    survive = np.zeros(origin.x.size, dtype=bool)
+    survive = cp.zeros(origin.x.size, dtype=bool)
     survive[indices] = True
     nr_collisions = survive.size - survive.sum()
 
@@ -229,9 +229,9 @@ def propagate_ballistic_trajectories(
             dt = calculate_time_ballistic(dz, vels.vz, acceleration.az)
             x, v = propagate_ballistic(dt, coords, vels, acceleration)
             if idz != 0:
-                t_accepted = np.column_stack([t_accepted, t_accepted[:, -1] + dt])
+                t_accepted = cp.column_stack([t_accepted, t_accepted[:, -1] + dt])
             else:
-                t_accepted = np.column_stack([t_accepted, t_accepted + dt])
+                t_accepted = cp.column_stack([t_accepted, t_accepted + dt])
             accepted_coords.column_stack(x)
             accepted_velocities.column_stack(v)
 
@@ -243,9 +243,9 @@ def propagate_ballistic_trajectories(
 
     # Save final timestamps, coordinates, and velocities
     if z_save is not None and len(z_save) > 0:
-        t_accepted = np.column_stack([t_accepted, t_accepted[:, -1] + dt])
+        t_accepted = cp.column_stack([t_accepted, t_accepted[:, -1] + dt])
     else:
-        t_accepted = np.column_stack([t_accepted, t_accepted + dt])
+        t_accepted = cp.column_stack([t_accepted, t_accepted + dt])
     accepted_coords.column_stack(x)
     accepted_velocities.column_stack(v)
 
