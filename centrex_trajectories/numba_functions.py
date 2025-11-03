@@ -83,11 +83,14 @@ def _force_eql_poly_scalar(
 def _force_eql_scalar(
     x: float,
     y: float,
+    z: float,
     x0: float,
     y0: float,
     V: float,
     R: float,
     stark_deriv_coeff: npt.NDArray[np.float64],
+    cos_tilt: float=0,
+    sin_tilt: float=0,
 ) -> tuple[float, float, float]:
     """
     Fast per‑particle force for an electrostatic quadrupole lens.
@@ -96,14 +99,18 @@ def _force_eql_scalar(
     # shift to lens centre
     _x = x - x0
     _y = y - y0
+    _y = _y * cos_tilt - z * sin_tilt  # rotate y,z according to tilt
+    _z = y * sin_tilt + z * cos_tilt
+
     r2 = _x * _x + _y * _y
     if r2 < 1e-20:  # on axis → no transverse force
         return 0.0, 0.0, 0.0
 
     r = np.sqrt(r2)
     dx = _x / r
-    dy = _y / r
-
+    _dy = _y / r
+    dy = _dy * cos_tilt
+    dz = -_dy * sin_tilt
     # |E| and dE/dr  (linear in r)
     v2_over_r2 = 2 * V / R**2
     E_mag = v2_over_r2 * r
@@ -113,4 +120,4 @@ def _force_eql_scalar(
     dVdE = _polyval_scalar(E_mag, stark_deriv_coeff)
 
     coeff = -dVdE * dEdr
-    return coeff * dx, coeff * dy, 0.0
+    return coeff * dx, coeff * dy, coeff * dz

@@ -204,6 +204,8 @@ class ElectrostaticQuadrupoleLens(ODESection):
         self.x0 = x
         self.y0 = y
         self.tilt = tilt
+        self._sin_tilt = np.sin(tilt)
+        self._cos_tilt = np.cos(tilt)
         self._check_objects()
         self._initialize_potentials(stark_potential)
 
@@ -219,13 +221,7 @@ class ElectrostaticQuadrupoleLens(ODESection):
             self._stark_potential = FastPolynomial(stark_potential)
 
         self._stark_potential_derivative = self._stark_potential.deriv()
-
-    def x_transformed(self, x: NDArray_or_Float) -> NDArray_or_Float:
-        return x - self.x0
-
-    def y_transformed(self, y: NDArray_or_Float) -> NDArray_or_Float:
-        return y - self.y0
-    
+  
     def translation(self,
         x: NDArray_or_Float,
         y: NDArray_or_Float,
@@ -361,11 +357,11 @@ class ElectrostaticQuadrupoleLens(ODESection):
         stark = -self.stark_potential_derivative(
             x, y, z
         ) * self.electric_field_derivative_r(x, y, z)
-
+        Fy = stark * dy
         if isinstance(x, np.ndarray):
-            return (stark * dx, stark * dy, np.zeros_like(x))
+            return (stark * dx, Fy * np.cos(self.tilt), - Fy * np.sin(self.tilt), np.zeros_like(x))
         else:
-            return (stark * dx, stark * dy, 0.0)
+            return (stark * dx, Fy * np.cos(self.tilt), - Fy * np.sin(self.tilt), 0.0)
 
     def force_fast_scalar(
         self, t: float, x: float, y: float, z: float
@@ -373,11 +369,14 @@ class ElectrostaticQuadrupoleLens(ODESection):
         return _force_eql_scalar(
             x,
             y,
+            z,
             self.x0,
             self.y0,
             self.V,
             self.R,
             self._stark_potential_derivative.coef,
+            self._cos_tilt,
+            self._sin_tilt
         )
 
     def stark_potential_derivative(
