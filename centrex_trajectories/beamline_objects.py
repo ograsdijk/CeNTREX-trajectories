@@ -12,7 +12,11 @@ from scipy.optimize import brentq
 
 from .common_types import NDArray_or_Float
 from .data_structures import Acceleration, Coordinates, Force, Velocities
-from .numba_functions import _force_eql_poly_scalar, _force_eql_scalar
+from .numba_functions import (
+    _force_eql_poly_scalar,
+    _force_eql_scalar,
+    _force_eql_scalar_tilt,
+)
 from .particles import Particle
 from .polynomials import FastPolynomial, Polynomial2D
 from .propagation_ballistic import calculate_time_ballistic, propagate_ballistic
@@ -177,6 +181,7 @@ class ElectrostaticQuadrupoleLens(ODESection):
         R: float,
         x: float = 0,
         y: float = 0,
+        tilt: float = 0,
         save_collisions: bool = False,
         stark_potential: None | npt.NDArray[np.float64] = None,
     ) -> None:
@@ -202,6 +207,9 @@ class ElectrostaticQuadrupoleLens(ODESection):
         self.R = R
         self.x0 = x
         self.y0 = y
+        self.tilt = tilt
+        self._cos_tilt = float(np.cos(self.tilt))
+        self._sin_tilt = float(np.sin(self.tilt))
         self._check_objects()
         self._initialize_potentials(stark_potential)
 
@@ -217,12 +225,60 @@ class ElectrostaticQuadrupoleLens(ODESection):
             self._stark_potential = FastPolynomial(stark_potential)
 
         self._stark_potential_derivative = self._stark_potential.deriv()
+        self._stark_potential_derivative.coef = np.ascontiguousarray(
+            self._stark_potential_derivative.coef, dtype=np.float64
+        )
 
-    def x_transformed(self, x: NDArray_or_Float) -> NDArray_or_Float:
-        return x - self.x0
+    def translation(
+        self,
+        x: NDArray_or_Float,
+        y: NDArray_or_Float,
+        z: NDArray_or_Float,
+    ) -> Tuple[NDArray_or_Float, NDArray_or_Float, NDArray_or_Float]:
+        """
+        Given the position x, y, z, generate the relative coordinates w.r.t. the lens
 
-    def y_transformed(self, y: NDArray_or_Float) -> NDArray_or_Float:
-        return y - self.y0
+        Args:
+            x (Union[NDArray[np.float64], float]): x coordinate(s) [m]
+            y (Union[NDArray[np.float64], float]): y coordinate(s) [m]
+            z (Union[NDArray[np.float64], float]): z coordinate(s) [m]
+
+        Returns:
+            Tuple[NDArray_or_Float, NDArray_or_Float, NDArray_or_Float] transformed coordinates
+        """
+        return (x - self.x0, y - self.y0, z)
+
+    def rotation(
+        self,
+        x: NDArray_or_Float,
+        y: NDArray_or_Float,
+        z: NDArray_or_Float,
+    ) -> Tuple[NDArray_or_Float, NDArray_or_Float, NDArray_or_Float]:
+        """
+        Given the position x, y, z, generate the relative coordinates w.r.t. the lens coordinate system
+
+        Args:
+            x (Union[NDArray[np.float64], float]): x coordinate(s) [m]
+            y (Union[NDArray[np.float64], float]): y coordinate(s) [m]
+            z (Union[NDArray[np.float64], float]): z coordinate(s) [m]
+
+        Returns:
+            Tuple[NDArray_or_Float, NDArray_or_Float, NDArray_or_Float] transformed coordinates
+        """
+        return (
+            x,
+            y * np.cos(self.tilt) - z * np.sin(self.tilt),
+            y * np.sin(self.tilt) + z * np.cos(self.tilt),
+        )
+
+    def coordinate_transformation(
+        self,
+        x: NDArray_or_Float,
+        y: NDArray_or_Float,
+        z: NDArray_or_Float,
+    ) -> Tuple[NDArray_or_Float, NDArray_or_Float, NDArray_or_Float]:
+        _x, _y, _z = self.translation(x, y, z)
+        return self.rotation(_x, _y, _z)
 
     def electric_field(
         self,
@@ -241,8 +297,7 @@ class ElectrostaticQuadrupoleLens(ODESection):
         Returns:
             Union[NDArray_or_Float, float]: electric field at x,y,z in V/m
         """
-        _x = self.x_transformed(x)
-        _y = self.y_transformed(y)
+        _x, _y, _z = self.coordinate_transformation(x, y, z)
 
         return cast(
             NDArray_or_Float, 2 * self.V * np.sqrt(_x**2 + _y**2) / (self.R) ** 2
@@ -299,34 +354,67 @@ class ElectrostaticQuadrupoleLens(ODESection):
         Returns:
             List: force in x, y and z
         """
-        _x = self.x_transformed(x)
-        _y = self.y_transformed(y)
-        r = np.sqrt(_x**2 + _y**2)
-        if r == 0:
-            dx = 0.0
-            dy = 0.0
-        else:
-            dx = _x / r
-            dy = _y / r
-        stark = -self.stark_potential_derivative(
-            x, y, z
-        ) * self.electric_field_derivative_r(x, y, z)
+        # 1) Transform to lens coordinates (x', y', z')
+        _x, _y, _z = self.coordinate_transformation(x, y, z)
 
-        if isinstance(x, np.ndarray):
-            return (stark * dx, stark * dy, np.zeros_like(x))
+        # 2) Compute radius and unit vectors in lens frame
+        r = np.hypot(_x, _y)
+        if np.isscalar(x):
+            dx = 0.0 if r == 0.0 else _x / r
+            dy = 0.0 if r == 0.0 else _y / r
         else:
-            return (stark * dx, stark * dy, 0.0)
+            dx = np.divide(_x, r, out=np.zeros_like(_x, dtype=float), where=r != 0.0)
+            dy = np.divide(_y, r, out=np.zeros_like(_y, dtype=float), where=r != 0.0)
+
+        # 3) Field and derivative (in lens frame)
+        E = 2.0 * self.V * r / (self.R**2)
+        dVdE = self._stark_potential_derivative(E)
+        dEdr = 2.0 * self.V / (self.R**2)
+        stark = -dVdE * dEdr  # (-dV/dE)*(dE/dr)
+
+        # 4) Force components in lens frame
+        fxp = stark * dx
+        fyp = stark * dy
+        fzp = 0.0 if np.isscalar(x) else np.zeros_like(r)
+
+        # 5) Rotate back to lab frame (inverse of rotation() → R_x(-tilt))
+        ct = np.cos(self.tilt)
+        st = np.sin(self.tilt)
+
+        if np.isscalar(x):
+            fx = fxp
+            fy = fyp * ct + fzp * np.sin(self.tilt)
+            fz = -fyp * st + fzp * ct
+            return (fx, fy, fz)
+        else:
+            fx = fxp
+            fy = fyp * ct  # fzp = 0 array
+            fz = -fyp * st
+            return (fx, fy, fz)
 
     def force_fast_scalar(
         self, t: float, x: float, y: float, z: float
     ) -> tuple[float, float, float]:
-        return _force_eql_scalar(
+        if abs(self._sin_tilt) < 1e-12:
+            return _force_eql_scalar(
+                x,
+                y,
+                self.x0,
+                self.y0,
+                self.V,
+                self.R,
+                self._stark_potential_derivative.coef,
+            )
+        return _force_eql_scalar_tilt(
             x,
             y,
+            z,
             self.x0,
             self.y0,
             self.V,
             self.R,
+            self._cos_tilt,
+            self._sin_tilt,
             self._stark_potential_derivative.coef,
         )
 

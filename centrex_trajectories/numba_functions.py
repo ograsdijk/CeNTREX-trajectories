@@ -25,13 +25,15 @@ def _polyval_1d(
 
 
 @nb.njit(inline="always")
-def _polyval2d_scalar(x: float, y: float, coeffs: npt.NDArray[np.floating]) -> float:
-    result = 0.0
-    for i in range(coeffs.shape[0]):
-        x_pow = x**i
-        for j in range(coeffs.shape[1]):
-            result += coeffs[i, j] * x_pow * y**j
-    return result
+def _polyval2d_scalar(x: float, y: float, coeffs: npt.NDArray[np.float64]) -> float:
+    acc = 0.0
+    # coeffs shape: (nx+1, ny+1), where coeffs[i, j] multiplies x^i y^j
+    for i in range(coeffs.shape[0] - 1, -1, -1):
+        row_acc = 0.0
+        for j in range(coeffs.shape[1] - 1, -1, -1):
+            row_acc = row_acc * y + float(coeffs[i, j])
+        acc = acc * x + row_acc
+    return acc
 
 
 @nb.njit
@@ -114,3 +116,56 @@ def _force_eql_scalar(
 
     coeff = -dVdE * dEdr
     return coeff * dx, coeff * dy, 0.0
+
+
+def _force_eql_scalar_tilt(
+    x: float,
+    y: float,
+    z: float,
+    x0: float,
+    y0: float,
+    V: float,
+    R: float,
+    cos_tilt: float,
+    sin_tilt: float,
+    stark_deriv_coeff: npt.NDArray[
+        np.float64
+    ],  # dV/dE polynomial coeffs (C-contiguous, float64)
+) -> tuple[float, float, float]:
+    """
+    Fast per-particle force for an electrostatic quadrupole lens with tilt.
+    Precomputed parameters: x0, y0, cos_tilt, sin_tilt, k=2*V/R^2.
+    """
+    # 1) lab → lens coords: translate, then rotate about x by +tilt
+    xp = x - x0
+    yp0 = y - y0
+    yp = yp0 * cos_tilt - z * sin_tilt
+    # zp = yp0 * sin_tilt + z * cos_tilt  # not needed for force; included for clarity
+
+    # 2) lens-frame radial unit vector
+    r2 = xp * xp + yp * yp
+    if r2 < 1e-20:
+        return 0.0, 0.0, 0.0
+
+    r = np.sqrt(r2)
+    dxp = xp / r
+    dyp = yp / r
+
+    # 3) |E| and dE/dr in lens frame (quadrupole: E = k * r, dE/dr = k)
+    k = 2.0 * V / (R * R)
+    E_mag = k * r
+    dVdE = _polyval_scalar(E_mag, stark_deriv_coeff)
+    coeff = -dVdE * k  # (-dV/dE) * dE/dr
+
+    # 4) force in lens frame: purely transverse
+    fxp = coeff * dxp
+    fyp = coeff * dyp
+    # fzp = 0
+
+    # 5) lens → lab: rotate vector by R_x(-tilt)
+    # R_x(-θ): (fx = fxp, fy =  fyp*cosθ + 0*sinθ, fz = -fyp*sinθ + 0*cosθ)
+    fx = fxp
+    fy = fyp * cos_tilt
+    fz = -fyp * sin_tilt
+
+    return fx, fy, fz

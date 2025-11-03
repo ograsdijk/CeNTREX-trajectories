@@ -30,7 +30,7 @@ class FastPolynomial(Polynomial):
         ):
             coef = np.ascontiguousarray(self.coef, dtype=np.float64)
             # scalar fast‑path
-            if isinstance(x, float):
+            if np.isscalar(x):
                 return _polyval_scalar(x, coef)
             # 1‑D array fast‑path
             x_arr = np.asarray(x, dtype=np.float64)
