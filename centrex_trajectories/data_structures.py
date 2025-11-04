@@ -222,7 +222,7 @@ class Velocities:
 
     def append_from_ode(
         self,
-        sol: OdeResult,
+        sol: OdeResultLike,
         save_start: bool = True,
         v_indices: npt.NDArray[np.int32] = np.array([3, 4, 5]),
     ) -> None:
@@ -230,7 +230,7 @@ class Velocities:
         Append to velocities from an ODE solution
 
         Args:
-            sol (OdeResult): ODE solution for a trajectory under variable force
+            sol (OdeResultLike): ODE solution for a trajectory under variable force
                                     from solve_ivp
             save_start (bool, optional): save start value from sol. Defaults to True.
         """
