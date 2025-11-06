@@ -686,68 +686,115 @@ def augment_with_physics_extended_smooth(
     mass: float,
     clip_margin: float | None = None,
     add_phase_trig: bool = True,
-) -> npt.NDArray[np.float32]:
+    *,
+    g: float = 9.80665,
+    x_ap_in: float = 0.0,
+    y_ap_in: float = 0.0,
+    x_ap_out: float = 0.0,
+    y_ap_out: float = 0.0,
+    return_names: bool = False,
+) -> npt.NDArray[np.float32] | tuple[npt.NDArray[np.float32], list[str]]:
     """
     Enhanced physics feature augmentation with smooth focusing-phase encoding.
 
-    This version augments raw 6-D inputs and adds features that are continuous
-    across focusing-phase boundaries. It encodes the phase via sin(kL) and cos(kL)
-    and optionally clips large aperture margins to reduce outlier leverage.
+    This version preserves the original quadrupole thick-lens augmentation and
+    appends a lean set of gravity- and geometry-aware proxies that do not
+    require access to the field map. It assumes your *ideal* thick-lens
+    functions (``ideal_survival_mask``, ``ideal_thick_lens_map``) already
+    incorporate gravity for an ideal quadrupole with a quadratic Stark shift.
 
     Parameters
     ----------
     X_raw : ndarray of shape (N, 6), dtype=float32
-        Raw features: [x0, y0, vx, vy, vz, V].
+        Raw particle features: [x0, y0, vx, vy, vz, V].
     R : float
-        Bore radius [m].
+        Lens bore radius [m].
     L : float
         Lens length [m].
     alpha0 : float
         Stark polarizability [J/(V/m)^2].
     mass : float
         Particle mass [kg].
-    clip_margin : float or None, default=None
-        If not None, clip margin_x and margin_y to [-clip_margin, +clip_margin].
-        A good default is clip_margin=R.
-    add_phase_trig : bool, default=True
-        If True, append [sin(kL), cos(kL)] to make the phase representation smooth.
+    clip_margin : float or None, optional
+        If not None, clip the ideal aperture margins to
+        [-clip_margin, +clip_margin]. A good default is clip_margin=R.
+    add_phase_trig : bool, optional
+        If True, append [sin(kL), cos(kL)] to make the phase representation
+        smooth across π/2 and π boundaries (default True).
+    g : float, optional
+        Gravitational acceleration [m/s²]. Default is 9.80665.
+    x_ap_in, y_ap_in : float, optional
+        Entrance aperture center coordinates [m]. Defaults to 0.0.
+    x_ap_out, y_ap_out : float, optional
+        Exit aperture center coordinates [m]. Defaults to 0.0.
+    return_names : bool, optional
+        If True, also return a list of column names corresponding to each
+        augmented feature. Default is False.
 
     Returns
     -------
     X_aug : ndarray, dtype=float32
-        Columns (in order):
-          0-5   : x0, y0, vx, vy, vz, V
-          6     : k              [1/m]
-          7-8   : x_id, y_id     [m]
-          9-10  : margin_x, margin_y  [m] (clipped if requested)
-          11    : vperp_over_vz  [-]
-          12    : L_ang          [m^2/s]
-          13    : entry_angle    [rad]
-          14    : r0_over_R      [-]
-          15    : t_transit      [s]
-          16    : v_ratio        [-]  (same as vperp_over_vz; kept for back-compat)
-          17-18 : sin(kL), cos(kL)  (only if add_phase_trig=True)
+        Augmented feature matrix with shape (N, M), where M depends on whether
+        `add_phase_trig` is enabled. The first 6 columns remain the original
+        raw inputs. New physics-informed features are appended as follows:
 
-        Shape is (N, 19) if add_phase_trig=True, else (N, 17).
+        =====  ==============================  ============================
+        0–5    x0, y0, vx, vy, vz, V           raw input features
+        6      k                                [1/m] focusing strength
+        7–8    x_id, y_id                       [m] ideal thick-lens outputs (incl. gravity)
+        9–10   margin_x, margin_y               [m] ideal aperture margins
+        11     vperp_over_vz                    [–]
+        12     L_ang                            [m²/s]
+        13     entry_angle                      [rad]
+        14     r0_over_R                        [–]
+        15     t_transit                        [s]
+        16–17  sin(kL), cos(kL)                 (if add_phase_trig=True)
+        18     y_sag0 = ½ g (L/vz)²             [m] straight-flight sag proxy
+        19     η₀ = y_sag0 / R                  [–]
+        20–21  x0_centered/R, y0_centered/R     [–] entrance offsets vs. aperture center
+        22–23  x_id_centered/R, y_id_centered/R [–] *ideal-exit* offsets vs. aperture center
+        24–25  Jx, Jy                           [–] emittance-like invariants per plane
+        26     V_times_eta0 = V·η₀              [V] gravity–voltage interaction proxy
+        27     r0v_ratio = (r0/R)(v⊥/v_z)       [–]
+        =====  ==============================  ============================
+
+        The total column count M = 28 when add_phase_trig=True, or 26 otherwise.
 
     Notes
     -----
-    - sin(kL) and cos(kL) make the focusing phase continuous across π/2, π, 3π/2.
-    - Clipping large margins reduces gradient spikes from rare, far-out cases.
-    - Keep the first six columns as the raw 6-D layout so downstream code can slice [:, :6].
+    - No ballistic (field-free) exit estimates are included, since your ideal
+      thick-lens outputs already incorporate gravity and provide a richer
+      focusing baseline.
+    - y_sag0 and η₀ are retained as inexpensive global gravity proxies; they
+      summarize the tendency for slow beams to sag and often improve
+      calibration in low-vz slices.
+    - Centering features at entrance and *ideal* exit help when apertures are
+      offset or misaligned, without referencing simulated truth.
+    - All quantities are computed analytically from initial conditions and lens
+      parameters; no simulated trajectories are used.
 
     Examples
     --------
-    >>> X_aug = augment_with_physics_extended_smooth(
-    ...     X_raw, R=0.022, L=0.6, alpha0=alpha0, mass=particle.mass,
-    ...     clip_margin=0.022, add_phase_trig=True
-    ... )
-    >>> X_aug.shape  # (N, 19) when add_phase_trig=True
+    >>> X_aug, names = augment_with_physics_extended_smooth(
+    ...     X_raw, R=0.022, L=0.6, alpha0=alpha_TlF, mass=m_TlF,
+    ...     g=9.81, clip_margin=0.022, add_phase_trig=True, return_names=True)
+    >>> X_aug.shape
+    (N, 28)
+    >>> names[:10]
+    ['x0', 'y0', 'vx', 'vy', 'vz', 'V', 'k', 'x_id', 'y_id', 'margin_x']
+    >>> # First six columns remain the raw inputs
+    >>> np.allclose(X_aug[:, :6], X_raw)
+    True
     """
-    # unpack raw
-    x0, y0, vx, vy, vz, V = [X_raw[:, i].astype(np.float32) for i in range(6)]
+    # ---- unpack raw (keep your original 6-D layout) -------------------------
+    x0 = X_raw[:, 0].astype(np.float32)
+    y0 = X_raw[:, 1].astype(np.float32)
+    vx = X_raw[:, 2].astype(np.float32)
+    vy = X_raw[:, 3].astype(np.float32)
+    vz = X_raw[:, 4].astype(np.float32)
+    V = X_raw[:, 5].astype(np.float32)
 
-    # focusing strength and ideal maps
+    # ---- focusing strength & ideal thick-lens proxies (gravity included) ---
     gammaG = gammaG_from_bore(R)
     k = np.array(
         [k_from_V_vz(alpha0, mass, gammaG, Vi, vzi) for Vi, vzi in zip(V, vz)],
@@ -759,50 +806,86 @@ def augment_with_physics_extended_smooth(
 
     margin_x = (R - Ax).astype(np.float32)
     margin_y = (R - Ay).astype(np.float32)
-
-    # optional clipping to tame outliers
     if clip_margin is not None:
         c = float(clip_margin)
         margin_x = np.clip(margin_x, -c, c)
         margin_y = np.clip(margin_y, -c, c)
 
-    # kinematics and geometry
-    vperp = np.sqrt(vx * vx + vy * vy, dtype=np.float32)
-    vperp_over_vz = (vperp / vz).astype(np.float32)
-    L_ang = (np.sqrt(x0 * x0 + y0 * y0, dtype=np.float32) * vperp).astype(np.float32)
+    # ---- kinematics & geometry ---------------------------------------------
+    vperp = np.sqrt(vx * vx + vy * vy).astype(np.float32)
+    vperp_over_vz = (vperp / (vz + 1e-12)).astype(np.float32)
+    r0 = np.sqrt(x0 * x0 + y0 * y0).astype(np.float32)
+    L_ang = (r0 * vperp).astype(np.float32)
     entry_angle = np.arctan2(vperp, vz).astype(np.float32)
-    r0_over_R = (np.sqrt(x0 * x0 + y0 * y0, dtype=np.float32) / R).astype(np.float32)
-    t_transit = (L / vz).astype(np.float32)
-    v_ratio = vperp_over_vz  # kept as a separate column for back-compat
+    r0_over_R = (r0 / R).astype(np.float32)
+    t_transit = (L / (vz + 1e-12)).astype(np.float32)
 
-    # phase features (smooth across boundaries)
+    base_cols = [
+        ("x0", x0),
+        ("y0", y0),
+        ("vx", vx),
+        ("vy", vy),
+        ("vz", vz),
+        ("V", V),
+        ("k", k.astype(np.float32)),
+        ("x_id", x_id.astype(np.float32)),
+        ("y_id", y_id.astype(np.float32)),
+        ("margin_x", margin_x),
+        ("margin_y", margin_y),
+        ("vperp_over_vz", vperp_over_vz),
+        ("L_ang", L_ang),
+        ("entry_angle", entry_angle),
+        ("r0_over_R", r0_over_R),
+        ("t_transit", t_transit),
+    ]
+
+    trig_cols: list[tuple[str, np.ndarray]] = []
     if add_phase_trig:
         phi = (k * L).astype(np.float32)
-        sphi = np.sin(phi, dtype=np.float32)
-        cphi = np.cos(phi, dtype=np.float32)
+        trig_cols = [
+            ("sin_kL", np.sin(phi).astype(np.float32)),
+            ("cos_kL", np.cos(phi).astype(np.float32)),
+        ]
 
-    # assemble output (keep first 6 as raw)
-    cols = [
-        x0,
-        y0,
-        vx,
-        vy,
-        vz,
-        V,
-        k,
-        x_id.astype(np.float32),
-        y_id.astype(np.float32),
-        margin_x,
-        margin_y,
-        vperp_over_vz,
-        L_ang,
-        entry_angle,
-        r0_over_R,
-        t_transit,
-        v_ratio,
+    # ---- Gravity proxies & centered offsets (no ballistic) ------------------
+    y_sag0 = (0.5 * g * t_transit * t_transit).astype(np.float32)
+    eta0 = (y_sag0 / R).astype(np.float32)
+
+    x0_centered_over_R = ((x0 - x_ap_in) / R).astype(np.float32)
+    y0_centered_over_R = ((y0 - y_ap_in) / R).astype(np.float32)
+    x_id_centered_over_R = ((x_id - x_ap_out) / R).astype(np.float32)
+    y_id_centered_over_R = ((y_id - y_ap_out) / R).astype(np.float32)
+
+    # Emittance-like invariants and light interactions
+    Jx = (0.5 * ((x0 / R) ** 2 + (L / R) ** 2 * (vx / (vz + 1e-12)) ** 2)).astype(
+        np.float32
+    )
+    Jy = (0.5 * ((y0 / R) ** 2 + (L / R) ** 2 * (vy / (vz + 1e-12)) ** 2)).astype(
+        np.float32
+    )
+    V_times_eta0 = (V * eta0).astype(np.float32)
+    r0v_ratio = ((r0_over_R) * (vperp_over_vz)).astype(np.float32)
+
+    extra_cols = [
+        ("y_sag0", y_sag0),
+        ("eta0", eta0),
+        ("x0_centered_over_R", x0_centered_over_R),
+        ("y0_centered_over_R", y0_centered_over_R),
+        ("x_id_centered_over_R", x_id_centered_over_R),
+        ("y_id_centered_over_R", y_id_centered_over_R),
+        ("Jx", Jx),
+        ("Jy", Jy),
+        ("V_times_eta0", V_times_eta0),
+        ("r0v_ratio", r0v_ratio),
     ]
-    if add_phase_trig:
-        cols += [sphi, cphi]
 
-    X_aug = np.column_stack(cols).astype(np.float32)
+    # ---- assemble final matrix ---------------------------------------------
+    all_cols = base_cols + trig_cols + extra_cols
+    column_names = [name for name, _ in all_cols]
+    X_aug = np.column_stack([col.astype(np.float32) for _, col in all_cols]).astype(
+        np.float32
+    )
+
+    if return_names:
+        return X_aug, column_names
     return X_aug
