@@ -1,9 +1,9 @@
 [project]
 name = "centrex-trajectories"
-version = "0.3.2"
+version = "0.4"
 description = ""
 authors = [{ name = "ograsdijk", email = "o.grasdijk@gmail.com" }]
-requires-python = ">3.10"
+requires-python = ">3.11"
 readme = "README.md"
 license = "MIT"
 dependencies = [
