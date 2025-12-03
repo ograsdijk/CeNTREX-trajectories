@@ -60,7 +60,7 @@ from typing import List, Optional, Tuple, Union, cast
 import numpy as np
 import numpy.typing as npt
 
-from .beamline_objects import LinearSection, ODESection, Section
+from .beamline_objects import Bore, LinearSection, ODESection, Section
 from .common_types import ForceType
 from .data_structures import (
     Acceleration,
@@ -75,6 +75,7 @@ from .particles import Particle, TlF
 from .propagation_ballistic import propagate_ballistic_trajectories
 from .propagation_linear import propagate_linear_trajectories
 from .propagation_ode import propagate_ODE_trajectories
+from .propagation_ode_vectorized import ode_fun_batch, rk4_batch_fixed_steps
 from .propagation_options import PropagationOptions, PropagationType
 
 __all__: List[str] = ["PropagationType", "propagate_trajectories", "PropagationOptions"]
@@ -628,6 +629,104 @@ def propagate_trajectories(
             section_data.append(
                 SectionData(section.name, collisions, nr_collisions, nr_trajectories)
             )
+
+        # Vectorized ODE propagation for sections with position and time dependent forces
+        elif section.propagation_type == PropagationType.ode_vectorized:
+            # Check if particles need to be propagated ballistically to reach ODE section start
+            # This can happen if there's a gap between sections or after initialization
+            if np.any(
+                coordinates_tracked.get_last().z < section.start
+            ) and not np.allclose(coordinates_tracked.get_last().z, section.start):
+                # Bridge the gap with ballistic propagation
+                (
+                    timestamps_tracked,
+                    coordinates_tracked,
+                    velocities_tracked,
+                    indices,
+                    trajectories,
+                    sec_dat,
+                ) = do_ballistic(
+                    indices=indices,
+                    timestamps_tracked=timestamps_tracked,
+                    coordinates_tracked=coordinates_tracked,
+                    velocities_tracked=velocities_tracked,
+                    trajectories=trajectories,
+                    section=Section(
+                        name="_",
+                        objects=[],
+                        start=coordinates_tracked.get_last().z[
+                            0
+                        ],  # just give it one start coord, start is not used here
+                        stop=section.start,
+                        save_collisions=False,
+                    ),
+                    particle=particle,
+                    force=force,
+                    z_save_section=z_save_section,
+                    options=options,
+                )
+            coord_last = coordinates_tracked.get_last()
+            vel_last = velocities_tracked.get_last()
+            tstart = (
+                timestamps_tracked[:, -1]
+                if timestamps_tracked.ndim > 1
+                else timestamps_tracked[-1]
+            )
+            if options.section_options.get(section.name) is None:
+                raise ValueError("Options for vectorized ODE solver required")
+            t, d, survived = rk4_batch_fixed_steps(
+                f=ode_fun_batch,
+                t0=tstart,
+                z_stop=section.stop,
+                d0=np.column_stack(
+                    (
+                        coord_last.x,
+                        coord_last.y,
+                        coord_last.z,
+                        vel_last.vx,
+                        vel_last.vy,
+                        vel_last.vz,
+                    )
+                ),
+                n_steps=options.section_options[section.name].n_steps,
+                n_save=options.section_options[section.name].n_save,
+                mass=particle.mass,
+                force_fn=section.force,
+                force_cst=force,
+                check_bounds_functions=[
+                    obj.check_in_bounds_vectorized for obj in section.objects
+                ],
+            )
+
+            timestamps_tracked = timestamps_tracked[survived]
+            coordinates_tracked = coordinates_tracked.get_masked(survived)
+            velocities_tracked = velocities_tracked.get_masked(survived)
+            indices = indices[survived]
+
+            for idx in range(t.shape[0]):
+                timestamps_tracked = np.column_stack(
+                    [timestamps_tracked, t[idx, survived]]
+                )
+                coordinates_tracked.column_stack(
+                    Coordinates(
+                        d[idx, survived, 0], d[idx, survived, 1], z=d[idx, survived, 2]
+                    )
+                )
+                velocities_tracked.column_stack(
+                    Velocities(
+                        d[idx, survived, 3], d[idx, survived, 4], d[idx, survived, 5]
+                    )
+                )
+
+            # Update trajectories container if it's being used
+            if len(trajectories) != 0:
+                raise NotImplementedError(
+                    "Vectorized ODE propagation not implemented for existing Trajectories"
+                )
+
+            # Create section statistics
+            section_data = SectionData(section.name, [], ~survived.sum(), len(t))
+
         # Linear (harmonic) propagation for sections with linear restoring forces
         elif section.propagation_type == PropagationType.linear:
             assert type(section) is LinearSection

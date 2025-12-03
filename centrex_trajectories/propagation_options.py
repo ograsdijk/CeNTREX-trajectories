@@ -1,8 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import List
+from typing import Any
 
-__all__: List[str] = ["PropagationType", "PropagationOptions"]
+__all__: list[str] = ["PropagationType", "PropagationOptions", "ODEVectorizedOptions"]
 
 
 class PropagationType(Enum):
@@ -13,11 +13,19 @@ class PropagationType(Enum):
         ballistic (int): ballistic trajectory
         ode (int): ode trajectory
         linear (int): linear restoring force trajectory
+        ode_vectorized (int): vectorized ode trajectory
     """
 
     ballistic = auto()
     ode = auto()
     linear = auto()
+    ode_vectorized = auto()
+
+
+@dataclass
+class ODEVectorizedOptions:
+    n_steps: int
+    n_save: int
 
 
 @dataclass
@@ -32,3 +40,4 @@ class PropagationOptions:
 
     n_cores: int = 6
     verbose: bool = True
+    section_options: dict[str, Any] = field(default_factory=dict)

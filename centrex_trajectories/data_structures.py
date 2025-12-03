@@ -230,7 +230,7 @@ class Velocities:
         Append to velocities from an ODE solution
 
         Args:
-            sol (OdeResultLike): ODE solution for a trajectory under variable force
+            sol (OdeResult): ODE solution for a trajectory under variable force
                                     from solve_ivp
             save_start (bool, optional): save start value from sol. Defaults to True.
         """

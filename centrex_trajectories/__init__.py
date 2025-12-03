@@ -7,11 +7,12 @@ from . import (
     propagation_ode,
     propagation_options,
     random_generation,
+    utils,
     visualization,
-    utils
 )
 from .data_structures import Coordinates, Force, Gravity, Velocities
 from .propagation import PropagationOptions, PropagationType, propagate_trajectories
+from .propagation_options import ODEVectorizedOptions
 
 __all__ = [
     "Coordinates",
@@ -21,6 +22,7 @@ __all__ = [
     "PropagationType",
     "propagate_trajectories",
     "PropagationOptions",
+    "ODEVectorizedOptions",
 ]
 __all__ += beamline_objects.__all__.copy()
 __all__ += data_structures.__all__.copy()

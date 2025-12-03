@@ -1566,6 +1566,15 @@ class Bore(BeamlineObject):
             or self.z + self.length < stop
         )
 
+    def check_in_bounds_vectorized(
+        self,
+        x: npt.NDArray[np.float64],
+        y: npt.NDArray[np.float64],
+        z: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.bool_]:
+        mask = ((x - self.x) ** 2 + (y - self.y) ** 2) <= self.radius**2
+        return mask
+
     def get_acceptance(
         self,
         start: Coordinates,
@@ -1603,12 +1612,14 @@ class Bore(BeamlineObject):
         Returns:
             float: Value of the collision event function.
         """
-        r = np.sqrt((x - self.x) ** 2 + (y - self.y) ** 2)
+        # r = np.sqrt((x - self.x) ** 2 + (y - self.y) ** 2)
 
         # z_factor for checking if z coordinates are within the bore
-        z_factor = int(not bounds_check_tolerance(z, self.z, self.z + self.length))
+        # z_factor = int(not bounds_check_tolerance(z, self.z, self.z + self.length))
 
-        return (r - self.radius) + z_factor
+        # return r - self.radius  # + z_factor
+        r2 = (x - self.x) ** 2 + (y - self.y) ** 2
+        return r2 - self.radius**2
 
     def get_collisions_linear(
         self,
