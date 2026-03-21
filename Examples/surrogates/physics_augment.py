@@ -13,7 +13,7 @@ Key Concepts
    proportional to the field squared: ΔE ≈ -α₀ E²
 
 2. **Quadrupole Focusing**: Transverse position couples to voltage via
-   the field gradient: F_x ≈ -α₀ G² x, where G = ∂E/∂x ≈ V/R²
+   the field gradient: F_x ≈ -α₀ G² x, where G = ∂E/∂x ≈ 2V/R²
 
 3. **Ideal Thick Lens**: Analytical solution for harmonic motion:
    x(L) = x₀cos(kL) + (vₓ/vᵤ)/k·sin(kL), k = √(α₀G²/m·vᵤ²)
@@ -301,8 +301,8 @@ def gammaG_from_bore(r0_m: float) -> float:
     Estimate quadrupole gradient coefficient from bore radius.
 
     For a cylindrical quadrupole lens, the field gradient near the axis
-    scales as G ≈ V/R², where V is the applied voltage and R is the bore
-    radius. This function returns γ_G = 1/R² [1/(m²·V)] such that G = γ_G·V.
+    scales as G ≈ 2V/R², where V is the applied voltage and R is the bore
+    radius. This function returns γ_G = 2/R² [1/(m²·V)] such that G = γ_G·V.
 
     Parameters
     ----------
@@ -332,7 +332,7 @@ def gammaG_from_bore(r0_m: float) -> float:
     >>> G = gamma_G * V
     >>> print(f"G ≈ {G:.2e} V/m²")
     """
-    return 1.0 / (r0_m**2)
+    return 2.0 / (r0_m**2)
 
 
 def k_from_V_vz(

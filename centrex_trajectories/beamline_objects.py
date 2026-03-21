@@ -192,7 +192,7 @@ class ElectrostaticQuadrupoleLens(ODESection):
         """
         Initialize an electrostatic quadrupole lens section.
 
-        The lens produces a quadrupole electric field: E(r) = k*r where k = V/R².
+        The lens produces a quadrupole electric field: E(r) = k*r where k = 2V/R².
         Particles experience a Stark force: F = -dV/dE * ∇|E|
 
         Args:
@@ -217,7 +217,7 @@ class ElectrostaticQuadrupoleLens(ODESection):
         self.tilt = tilt
         self._cos_tilt = float(np.cos(self.tilt))
         self._sin_tilt = float(np.sin(self.tilt))
-        self._k = self._V / (self.R**2)  # Electric field gradient constant
+        self._k = 2.0 * self._V / (self.R**2)  # Electric field gradient constant
         self._check_objects()
         self._initialize_potentials(stark_potential)
 
@@ -263,7 +263,7 @@ class ElectrostaticQuadrupoleLens(ODESection):
             voltage: New voltage [V].
         """
         self._V = voltage
-        self._k = self._V / (self.R**2)
+        self._k = 2.0 * self._V / (self.R**2)
 
     def translation(
         self,
